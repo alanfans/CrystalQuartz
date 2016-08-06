@@ -1,10 +1,11 @@
 namespace CrystalQuartz.Build
 {
     using System;
-    using System.Collections.Generic;
     using System.Linq;
     using System.Reflection;
+    using CrystalQuartz.Build.Common;
     using CrystalQuartz.Build.Extensions;
+    using CrystalQuartz.Build.Tasks;
     using Rosalia.Core.Api;
     using Rosalia.FileSystem;
     using Rosalia.TaskLib.AssemblyInfo;
@@ -25,21 +26,25 @@ namespace CrystalQuartz.Build
 
                     if (currentDirectory == null)
                     {
-                        throw new Exception("Could not find Src directory");
+                        throw new Exception("Could not find Src directory " + WorkDirectory);
                     }
 
                     IDirectory artifacts = currentDirectory.Parent/"Artifacts";
                     artifacts.EnsureExists();
                     artifacts.Files.IncludeByExtension("nupkg", "nuspec").DeleteAll();
 
+                    IDirectory mergedBin = currentDirectory.Parent/"bin"/"Merged";
+                    mergedBin.EnsureExists();
+
                     return new
                     {
-                        Root = currentDirectory.Parent,
-                        Artifacts = artifacts,
-                        Version = "3.2.0.1",
-                        Src = currentDirectory,
+                        //Root = currentDirectory.Parent,
+                        //Artifacts = artifacts,
+                        Version = "4.0.0.0",
+                        //Src = currentDirectory,
                         Configuration = "Debug",
-                        BuildAssets = (currentDirectory/"CrystalQuartz.Build"/"Assets").AsDirectory()
+                        //BuildAssets = (currentDirectory/"CrystalQuartz.Build"/"Assets").AsDirectory()
+                        Solution = new SolutionStructure(currentDirectory.Parent)
                     }.AsTaskResult();
                 });
 
@@ -47,7 +52,7 @@ namespace CrystalQuartz.Build
             var generateCommonAssemblyInfo = Task(
                 "Generate common assembly info",
                 from data in initTask 
-                select new GenerateAssemblyInfo(data.Src/"CommonAssemblyInfo.cs")
+                select new GenerateAssemblyInfo(data.Solution.Src/"CommonAssemblyInfo.cs")
                 {
                     Attributes =
                     {
@@ -65,8 +70,8 @@ namespace CrystalQuartz.Build
                 {
                     ToolPath = "tsc",
                     Arguments =                         
-                        (data.Src/"CrystalQuartz.Web"/"Client"/"Scripts"/"Application.ts").AsFile().GetRelativePath(WorkDirectory) + " -out " +
-                        (data.Src/"CrystalQuartz.Web"/"Content"/"Scripts"/"application.js").AsFile().GetRelativePath(WorkDirectory)
+                        (data.Solution.CrystalQuartz_Application/"Client"/"Scripts"/"Application.ts").AsFile().GetRelativePath(WorkDirectory) + " -out " +
+                        (data.Solution.CrystalQuartz_Application/"Content"/"Scripts"/"application.js").AsFile().GetRelativePath(WorkDirectory)
                 });
 
             //// ----------------------------------------------------------------------------------------------------------------------------
@@ -75,8 +80,8 @@ namespace CrystalQuartz.Build
                 from data in initTask
                 select new ExecTask
                 {
-                    ToolPath = (data.Src/"packages").AsDirectory().Directories.Last(dir => dir.Name.StartsWith("Mono.TextTransform"))/"tools"/"TextTransform.exe",
-                    Arguments = data.Src/"CrystalQuartz.Web/Content"/"index.tt"
+                    ToolPath = (data.Solution.Src/"packages").AsDirectory().Directories.Last(dir => dir.Name.StartsWith("Mono.TextTransform"))/"tools"/"TextTransform.exe",
+                    Arguments = data.Solution.CrystalQuartz_Application/"Content"/"index.tt"
                 });
             
             //// ----------------------------------------------------------------------------------------------------------------------------
@@ -92,48 +97,65 @@ namespace CrystalQuartz.Build
             var cleanArtifacts = Task(
                 "Clean artifacts",
                 from data in initTask
-                select _ => data.Artifacts.Files.IncludeByExtension("nupkg", "nuspec").DeleteAll());
+                select _ => data.Solution.Artifacts.Files.IncludeByExtension("nupkg", "nuspec").DeleteAll());
 
-            //// ----------------------------------------------------------------------------------------------------------------------------
-            var generateSimplePackageNuspec = Task(
-                "Generate simple package spec",
+            var mergeBinaries = Task(
+                "MergeBinaries",
+
                 from data in initTask
-                select new GenerateNuGetSpecTask(data.Artifacts/"CrystalQuartz.Simple.nuspec")
-                    .Id("CrystalQuartz.Simple")
-                    .FillCommonProperties(data.Root/"bin"/data.Configuration, data.Version)
-                    .Description("Installs CrystalQuartz panel (pluggable Qurtz.NET viewer) using simple scheduler provider. This approach is appropriate for scenarios where the scheduler and a web application works in the same AppDomain.")
-                    .WithFiles((data.BuildAssets/"Simple").AsDirectory().Files, "content"),
-                    
-                DependsOn(cleanArtifacts),
+                select new MergeBinariesTask(data.Solution, data.Configuration).AsSubflow(),
+                
                 DependsOn(buildSolution));
 
-            //// ----------------------------------------------------------------------------------------------------------------------------
-            var generateRemotePackageNuspec = Task(
-                "Generate remote package spec",
+
+            var generateNuspecs = Task(
+                "GenerateNuspecs",
                 from data in initTask
-                select new GenerateNuGetSpecTask(data.Artifacts/"CrystalQuartz.Remote.nuspec")
-                    .Id("CrystalQuartz.Remote")
-                    .FillCommonProperties(data.Root/"bin"/data.Configuration, data.Version)
-                    .Description("Installs CrystalQuartz panel (pluggable Qurtz.NET viewer) using remote scheduler provider. Note that you should set remote scheduler URI after the installation.")
-                    .WithFiles(data.BuildAssets.GetDirectory("Remote").Files, "content"),
-                        
-                DependsOn(generateSimplePackageNuspec));
+                select new GenerateNuspecsTask(data.Solution, data.Configuration, data.Version),
+                
+                DependsOn(mergeBinaries));
+
+//            //// ----------------------------------------------------------------------------------------------------------------------------
+//            var generateSimplePackageNuspec = Task(
+//                "Generate simple package spec",
+//                from data in initTask
+//                select new GenerateNuGetSpecTask(data.Artifacts/"CrystalQuartz.Simple.nuspec")
+//                    .Id("CrystalQuartz.Simple")
+//                    .FillCommonProperties(data.Root/"bin"/data.Configuration, data.Version)
+//                    .Description("Installs CrystalQuartz panel (pluggable Qurtz.NET viewer) using simple scheduler provider. This approach is appropriate for scenarios where the scheduler and a web application works in the same AppDomain.")
+//                    .WithFiles((data.BuildAssets/"Simple").AsDirectory().Files, "content"),
+//
+//                DependsOn(mergeBinaries), // todo move out of here
+//                DependsOn(cleanArtifacts),
+//                DependsOn(buildSolution));
+//
+//            //// ----------------------------------------------------------------------------------------------------------------------------
+//            var generateRemotePackageNuspec = Task(
+//                "Generate remote package spec",
+//                from data in initTask
+//                select new GenerateNuGetSpecTask(data.Artifacts/"CrystalQuartz.Remote.nuspec")
+//                    .Id("CrystalQuartz.Remote")
+//                    .FillCommonProperties(data.Root/"bin"/data.Configuration, data.Version)
+//                    .Description("Installs CrystalQuartz panel (pluggable Qurtz.NET viewer) using remote scheduler provider. Note that you should set remote scheduler URI after the installation.")
+//                    .WithFiles(data.BuildAssets.GetDirectory("Remote").Files, "content"),
+//                        
+//                DependsOn(generateSimplePackageNuspec));
             
             //// ----------------------------------------------------------------------------------------------------------------------------
+            
             var buildPackages = Task(
                 "Build packages",
                 from data in initTask
-                select ForEach(data.Artifacts.Files.IncludeByExtension(".nuspec")).Do(
+                select ForEach(data.Solution.Artifacts.Files.IncludeByExtension(".nuspec")).Do(
                     nuspec => new GeneratePackageTask(nuspec)
                     {
-                        WorkDirectory = data.Artifacts,
-                        ToolPath = data.Src/".nuget"/"NuGet.exe"
+                        WorkDirectory = data.Solution.Artifacts,
+                        ToolPath = data.Solution.Src/".nuget"/"NuGet.exe"
                     }, 
                     nuspec => string.Format("Generate NuGet package for {0}", nuspec.NameWithoutExtension)),
                     
                 Default(),
-                DependsOn(generateRemotePackageNuspec),
-                DependsOn(generateSimplePackageNuspec));
+                DependsOn(generateNuspecs));
 
             //// ----------------------------------------------------------------------------------------------------------------------------
 
@@ -142,11 +164,11 @@ namespace CrystalQuartz.Build
 
                 from data in initTask
                 select
-                    ForEach(data.Artifacts.Files.IncludeByExtension("nupkg")).Do(
+                    ForEach(data.Solution.Artifacts.Files.IncludeByExtension("nupkg")).Do(
                         package => new PushPackageTask(package)
                         {
-                            WorkDirectory = data.Artifacts,
-                            ToolPath = data.Src/".nuget"/"NuGet.exe"
+                            WorkDirectory = data.Solution.Artifacts,
+                            ToolPath = data.Solution.Src/".nuget"/"NuGet.exe"
                         },
                         package => "Push" + package.NameWithoutExtension),
 
